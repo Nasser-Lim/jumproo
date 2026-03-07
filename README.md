@@ -1,79 +1,116 @@
-# 📈 Stock Surge Prediction Project (Chronos Fine-tuning)
+# Jumproo — Stock Surge Prediction v7
 
-## 1. 프로젝트 개요 (Project Overview)
-이 프로젝트는 Amazon의 시계열 파운데이션 모델인 **Chronos (T5-based)**를 파인튜닝하여, **"향후 5일 이내에 15% 이상 급등할 가능성이 높은 주식"**을 예측하는 AI 모델을 구축하는 것을 목표로 합니다.
-
-### 🎯 핵심 성과 (Key Achievements)
-- **파인튜닝 데이터셋 구축**: 84개 주요 종목에서 20,000개 이상의 급등 패턴과 20,000개의 일반 패턴을 추출하여 **1:1 균형 데이터셋 (Balanced Dataset)**을 생성했습니다.
-- **성능 개선**: 초기 모델의 과적합(Overfitting) 문제를 해결하고, 백테스트 결과 **평균 수익률 +8.23% (Threshold 0.6 기준)**를 달성했습니다.
-- **실전 어플리케이션**: Streamlit 기반의 웹 대시보드를 통해 실시간 종목 분석이 가능합니다.
+5일 이내 15% 이상 급등할 주식을 예측하는 파이프라인.
+**PatchTST + EVT + Hawkes Process + HMM** 기반 하이브리드 모델.
 
 ---
 
-## 2. 프로젝트 구조 (Directory Structure)
+## 빠른 시작
+
+### 대시보드 실행
+```bash
+streamlit run stock_prediction_v7/src/app/app_v7.py
+```
+
+### 전체 실행 순서 (OBS11 GPU 머신)
+```bash
+git clone https://github.com/Nasser-Lim/jumproo.git
+cd jumproo
+
+# 의존성
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install numpy pandas scipy scikit-learn pyyaml plotly streamlit tqdm hmmlearn
+
+# raw 데이터 복사 후 (stock_prediction/data/raw/ — 389개 CSV)
+python stock_prediction_v7/src/data/create_dataset_v7.py   # 데이터셋 생성
+python stock_prediction_v7/src/train/train_v7.py            # GPU 학습
+
+# 학습 완료 후 push
+git add stock_prediction_v7/models/patchtst/best_model.pt
+git add stock_prediction_v7/models/patchtst/train_history.json
+git commit -m "v7: GPU trained PatchTST"
+git push
+```
+
+### 로컬에서 백테스트 + 대시보드
+```bash
+git pull
+python stock_prediction_v7/src/backtest/backtest_v7.py --mode val   # 검증
+python stock_prediction_v7/src/backtest/backtest_v7.py --mode test  # 최종 (한 번만)
+streamlit run stock_prediction_v7/src/app/app_v7.py
+```
+
+---
+
+## 아키텍처
+
+```
+[PatchTST]  60일 context → 5일 예측 (급등 확률)
+     +
+[통계 필터]  EVT(꼬리확률) + Hawkes(군집도) + HMM(국면) + 거래량 필터
+     ↓
+ Final Score → STRONG_BUY / BUY / WATCH / NEUTRAL
+```
+
+### 데이터 분할 (2026.03 기준)
+
+| 구간 | 기간 | 용도 |
+|---|---|---|
+| Train | 2021.02 ~ 2024.06 | 모델 학습 |
+| Val | 2024.07 ~ 2025.06 | 가중치/threshold 튜닝 |
+| Test | 2025.07 ~ 2026.02 | 최종 평가 (한 번만) |
+
+---
+
+## v7 핵심 개선 (vs v1~v6)
+
+| 문제 | 해결 |
+|---|---|
+| 랜덤 셔플 분할 → 데이터 유출 | 시간 기반 Train/Val/Test 분리 |
+| 백테스트 = 훈련 기간 | 완전 분리된 Holdout Test |
+| Expanding window (평가 데이터 포함 피팅) | Rolling window 504일, strictly past |
+| Recency weighting 편향 | 균일 가중 |
+| GPU 필수 | CPU/GPU 자동 선택 |
+
+### 검증된 OOS 성능 (Val set 2024.07~2025.06, stat-only)
+
+| Threshold | 신호 수 | Precision | 평균 수익률 | Base Rate |
+|---|---|---|---|---|
+| WATCH (≥0.2) | 128 | 22.66% | +8.36% | 5.24% |
+| BUY (≥0.4) | 80 | 22.50% | +8.05% | 5.24% |
+| STRONG_BUY (≥0.6) | 6 | 50.00% | +21.38% | 5.24% |
+
+> v1~v6의 보고 수치는 in-sample 과대 추정임. 위 수치가 진정한 OOS 결과.
+
+---
+
+## 버전 히스토리 (참고)
+
+| 버전 | 모델 | Precision | 비고 |
+|---|---|---|---|
+| v1.0 | Chronos (T5) | 11.9% | In-sample |
+| v2.0 | PatchTST + 거래량 | 13.9% | In-sample |
+| v3.0 | PatchTST + MC Dropout | 12.1% | In-sample, 과도한 보수성 |
+| v4.0 | 앙상블 5모델 | 20.5% | In-sample |
+| v6.0 | EVT + Hawkes + HMM | 24.0% | In-sample (과대 추정) |
+| **v7.0** | **PatchTST + EVT + Hawkes** | **22.66%** | **OOS (Val set)** |
+
+---
+
+## 디렉토리 구조
 
 ```
 jumproo/
-├── stock_prediction/
-│   ├── configs/                # 학습 설정 파일
-│   │   └── train_config.yaml   # Chronos LoRA 파인튜닝 하이퍼파라미터
-│   ├── data/                   # 데이터 저장소
-│   │   ├── raw/                # 수집된 원본 CSV 파일 (yfinance)
-│   │   └── processed/          # 학습용 JSONL 데이터셋 (balanced_finetune.jsonl)
-│   ├── models/                 # 모델 저장소
-│   │   └── finetuned/          # 파인튜닝된 체크포인트 (run-1/run-0/checkpoint-final)
-│   ├── outputs/                # 백테스트 결과 및 시각화 이미지
-│   └── src/                    # 소스 코드
-│       ├── app/                # 웹 어플리케이션
-│       │   └── app.py          # Streamlit 대시보드 메인 스크립트
-│       ├── backtest/           # 백테스팅 모듈
-│       │   ├── backtester.py   # 시뮬레이션 엔진 (배치 처리 최적화됨)
-│       │   ├── run_comparison.py # 모델 비교 및 전체 백테스트 실행 스크립트
-│       │   └── visualize_backtest.py # 결과 시각화 도구
-│       ├── data/               # 데이터 파이프라인
-│       │   ├── create_finetune_data.py # 학습 데이터 생성기 (Surge/Non-Surge 추출)
-│       │   └── preprocessor.py # 전처리 유틸리티
-│       └── model/              # 모델 로직
-│           └── predictor.py    # Chronos 추론 클래스 (Surge Probability 계산)
+├── stock_prediction_v7/          # 현재 버전 (v7)
+│   ├── configs/v7_config.yaml    # 전체 설정
+│   ├── data/processed/           # 시간 분할 데이터셋 (npz)
+│   ├── models/patchtst/          # 학습된 모델 체크포인트
+│   ├── outputs/                  # 백테스트 결과 CSV
+│   └── src/
+│       ├── data/create_dataset_v7.py
+│       ├── model/{evt_gpd, hawkes_timing, hmm_regime, predictor_v7}.py
+│       ├── train/train_v7.py
+│       ├── backtest/backtest_v7.py
+│       └── app/app_v7.py
+└── stock_prediction/data/raw/    # 원본 CSV 389개 (gitignore)
 ```
-
----
-
-## 3. 설치 및 실행 가이드 (How to Run)
-
-### 🛠️ 사전 준비 (Requirements)
-Python 3.10 이상이 필요합니다.
-```bash
-pip install torch transformers pandas yfinance plotly streamlit
-pip install git+https://github.com/amazon-science/chronos-forecasting.git
-```
-
-### 🚀 1. 웹 대시보드 실행 (Web Dashboard)
-가장 추천하는 사용 방법입니다. 직관적인 UI에서 종목을 분석할 수 있습니다.
-```bash
-# ✅ 최신 버전 (v6.0 권장) — HMM + EVT + Hawkes 5단계 통계 파이프라인
-streamlit run stock_prediction_v6/src/app/app_v6.py
-
-# (구버전) v1.0 Chronos 기반
-streamlit run stock_prediction/src/app/app.py
-```
-
-### 📊 2. 백테스트 실행 (Backtesting)
-전체 종목에 대해 모델 성능을 검증하고 싶을 때 사용합니다.
-```bash
-# Python 경로 설정 (Windows Powershell)
-$env:PYTHONPATH += ";C:\Users\USER\repos\jumproo\chronos_repo\src"
-
-# 실행
-python stock_prediction/src/backtest/run_comparison.py
-```
-
----
-
-## 4. 모델 성능 요약 (Performance)
-**389개 종목 대상 3년치 백테스트 결과 (Threshold 0.6 적용 시)**
-- **정밀도 (Precision)**: 약 20.6% (5번 추천 중 1번은 15% 이상 폭등)
-- **평균 수익률 (Avg Return)**: **+8.23%** (5일 보유 기준)
-- **신호 빈도**: 약 3~4일에 1회 발생 (엄선된 종목 추천)
-
-> **Conclusion**: 이 모델은 **"잃지 않는 매매"**를 지향하며, 확률 60% 이상일 때 진입하면 높은 기대 수익률을 제공합니다.
