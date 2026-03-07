@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 import json
 import time
+from tqdm import tqdm
 
 
 class SurgeDataset(Dataset):
@@ -127,9 +128,14 @@ def train(config_path=None):
     model_dir.mkdir(parents=True, exist_ok=True)
 
     device = get_device(p["device"])
-    print(f"Device: {device}")
+    print("=" * 60)
+    print("  V7 PatchTST Training")
+    print("=" * 60)
+    print(f"  Device : {device}")
     if device.type == "cuda":
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  GPU    : {torch.cuda.get_device_name(0)}")
+        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"  VRAM   : {vram:.1f} GB")
 
     # Load data
     train_ds = SurgeDataset(processed_dir / "train.npz", data_cfg["context_length"])
@@ -140,7 +146,10 @@ def train(config_path=None):
     val_loader = DataLoader(val_ds, batch_size=p["batch_size"], shuffle=False,
                             num_workers=0, pin_memory=(device.type == "cuda"))
 
-    print(f"Train: {len(train_ds)} samples, Val: {len(val_ds)} samples")
+    surge_rate = float(train_ds.labels.mean())
+    print(f"  Train  : {len(train_ds):,} samples (surge rate: {surge_rate:.1%})")
+    print(f"  Val    : {len(val_ds):,} samples")
+    print("=" * 60)
 
     # Model
     model = PatchTSTModel(
@@ -156,7 +165,9 @@ def train(config_path=None):
     ).to(device)
 
     n_params = sum(p_.numel() for p_ in model.parameters())
-    print(f"Model parameters: {n_params:,}")
+    print(f"  Params : {n_params:,}")
+    print(f"  Epochs : {p['epochs']} (early stop patience={p['early_stopping_patience']})")
+    print("=" * 60)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["learning_rate"],
                                    weight_decay=1e-4)
@@ -175,10 +186,11 @@ def train(config_path=None):
         # Train
         model.train()
         train_loss = 0.0
-        for context, future, label in train_loader:
+        train_bar = tqdm(train_loader, desc=f"Epoch {epoch:02d}/{p['epochs']} [Train]",
+                         leave=False, unit="batch")
+        for context, future, label in train_bar:
             context = context.to(device)
-            # Target: close price channel (index 0) of future
-            target = future[:, :, 0].to(device)  # (B, 5)
+            target = future[:, :, 0].to(device)  # (B, 5) close channel
 
             pred = model(context)
             loss = criterion(pred, target)
@@ -187,32 +199,39 @@ def train(config_path=None):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            train_loss += loss.item() * context.size(0)
+            batch_loss = loss.item()
+            train_loss += batch_loss * context.size(0)
+            train_bar.set_postfix(loss=f"{batch_loss:.5f}")
 
         train_loss /= len(train_ds)
 
         # Validate
         model.eval()
         val_loss = 0.0
+        val_bar = tqdm(val_loader, desc=f"Epoch {epoch:02d}/{p['epochs']} [Val]  ",
+                       leave=False, unit="batch")
         with torch.no_grad():
-            for context, future, label in val_loader:
+            for context, future, label in val_bar:
                 context = context.to(device)
                 target = future[:, :, 0].to(device)
                 pred = model(context)
                 loss = criterion(pred, target)
                 val_loss += loss.item() * context.size(0)
+                val_bar.set_postfix(loss=f"{loss.item():.5f}")
         val_loss /= len(val_ds)
 
         scheduler.step()
         elapsed = time.time() - t0
+        lr_now = scheduler.get_last_lr()[0]
 
+        flag = " *" if val_loss < best_val_loss else f"  (patience {patience_counter+1}/{p['early_stopping_patience']})"
         print(f"Epoch {epoch:02d}/{p['epochs']} | "
-              f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
-              f"LR: {scheduler.get_last_lr()[0]:.6f} | {elapsed:.1f}s")
+              f"Train {train_loss:.5f} | Val {val_loss:.5f} | "
+              f"LR {lr_now:.2e} | {elapsed:.0f}s{flag}")
 
         history.append({
             "epoch": epoch, "train_loss": train_loss,
-            "val_loss": val_loss, "lr": scheduler.get_last_lr()[0]
+            "val_loss": val_loss, "lr": lr_now, "elapsed": elapsed
         })
 
         # Early stopping
@@ -225,11 +244,10 @@ def train(config_path=None):
                 "epoch": epoch,
                 "val_loss": val_loss,
             }, model_dir / "best_model.pt")
-            print(f"  -> Best model saved (val_loss={val_loss:.6f})")
         else:
             patience_counter += 1
             if patience_counter >= p["early_stopping_patience"]:
-                print(f"  -> Early stopping at epoch {epoch}")
+                print(f"\n  Early stopping triggered at epoch {epoch}.")
                 break
 
     # Save final
@@ -243,8 +261,28 @@ def train(config_path=None):
     with open(model_dir / "train_history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
-    print(f"Model saved to {model_dir}")
+    total_time = sum(h["elapsed"] for h in history)
+    best_epoch = min(history, key=lambda h: h["val_loss"])
+
+    print("\n" + "=" * 60)
+    print("  TRAINING COMPLETE")
+    print("=" * 60)
+    print(f"  Total time    : {total_time/60:.1f} min ({total_time:.0f}s)")
+    print(f"  Epochs ran    : {len(history)}/{p['epochs']}")
+    print(f"  Best epoch    : {best_epoch['epoch']} (val_loss={best_epoch['val_loss']:.6f})")
+    print(f"  Final train   : {history[-1]['train_loss']:.6f}")
+    print(f"  Final val     : {history[-1]['val_loss']:.6f}")
+    if len(history) >= 2:
+        improvement = history[0]['val_loss'] - best_epoch['val_loss']
+        print(f"  Val improved  : {improvement:.6f} from epoch 1")
+    print(f"  Model saved   : {model_dir / 'best_model.pt'}")
+    print("=" * 60)
+
+    # Quick sanity check
+    best_ckpt = torch.load(model_dir / "best_model.pt", map_location=device,
+                           weights_only=False)
+    print(f"\n  [Sanity] Best model checkpoint: epoch={best_ckpt['epoch']}, "
+          f"val_loss={best_ckpt['val_loss']:.6f}")
 
 
 if __name__ == "__main__":
