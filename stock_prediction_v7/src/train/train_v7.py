@@ -18,7 +18,11 @@ import time
 class SurgeDataset(Dataset):
     def __init__(self, npz_path, context_length=60):
         data = np.load(npz_path)
-        self.samples = data["samples"].astype(np.float32)  # (N, 65, 3)
+        samples = data["samples"].astype(np.float32)  # (N, 65, 3)
+        # Replace NaN with 0, clip extreme values
+        samples = np.nan_to_num(samples, nan=0.0, posinf=5.0, neginf=-5.0)
+        samples = np.clip(samples, -10.0, 10.0)
+        self.samples = samples
         self.labels = data["labels"].astype(np.int64)       # (N,)
         self.context_length = context_length
 

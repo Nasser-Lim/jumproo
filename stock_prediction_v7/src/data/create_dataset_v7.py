@@ -111,6 +111,10 @@ def process_stock(csv_path, context_length, prediction_length, surge_threshold):
 
         full_sample = np.concatenate([sample, future], axis=0)  # (65, 3)
 
+        # Skip samples with NaN (e.g. RSI warmup period)
+        if np.isnan(full_sample).any():
+            continue
+
         samples.append(full_sample)
         labels.append(label)
         sample_dates.append(pd.Timestamp(dates[t]))
