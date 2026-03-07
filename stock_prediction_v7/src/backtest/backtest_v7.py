@@ -127,7 +127,7 @@ def run_backtest(config_path=None, eval_start=None, eval_end=None,
 
     patchtst = None
     if use_patchtst:
-        patchtst = PatchTSTPredictor(device="cpu")
+        patchtst = PatchTSTPredictor(device="auto")
         if not patchtst.model:
             print("PatchTST model not found. Running stat-only backtest.")
             use_patchtst = False
@@ -147,6 +147,9 @@ def run_backtest(config_path=None, eval_start=None, eval_end=None,
         features = prepare_features(df)
         dates = features["dates"]
 
+        # Reset refit counter per stock so stats refit correctly on first point
+        predictor._last_refit = -predictor.refit_interval
+
         for i in range(context_length, len(df) - prediction_length, stride):
             date = pd.Timestamp(dates[i])
             if date < eval_start or date > eval_end:
@@ -164,7 +167,8 @@ def run_backtest(config_path=None, eval_start=None, eval_end=None,
                 if context is None:
                     continue
 
-                pt_result = patchtst.predict(context, current_price, surge_threshold)
+                pt_result = patchtst.predict(context, current_price, surge_threshold,
+                                             n_samples=5)
                 stat_result = predictor.predict_stat(
                     features["returns"], features["volatility"],
                     features["volume_change"], features["volume"],
