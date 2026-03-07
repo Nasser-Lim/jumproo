@@ -1,0 +1,85 @@
+# ============================================================
+# Stock Prediction v7 Configuration
+# ============================================================
+# Key principle: NO look-ahead bias. All parameters validated
+# on validation set, final evaluation on holdout test only once.
+# ============================================================
+
+# --- Data Split (temporal, no shuffle) ---
+data:
+  raw_dir: "../stock_prediction/data/raw"  # 389 CSV files
+  processed_dir: "data/processed"
+  train_end: "2024-06-30"       # Train: 2021-01 ~ 2024-06
+  val_start: "2024-07-01"
+  val_end: "2025-06-30"         # Val:   2024-07 ~ 2025-06
+  test_start: "2025-07-01"      # Test:  2025-07 ~ 2026-03 (holdout, evaluate ONCE)
+  context_length: 60            # 60 trading days lookback
+  prediction_length: 5          # 5-day forecast horizon
+  surge_threshold: 0.15         # 15% surge within 5 days
+  min_data_days: 120            # minimum days required per stock
+
+# --- PatchTST Model ---
+patchtst:
+  input_channels: 3             # [Close_norm, LogVolume, RSI]
+  context_length: 60
+  prediction_length: 5
+  patch_length: 8
+  stride: 4
+  d_model: 128
+  n_heads: 4
+  n_layers: 3
+  dropout: 0.2
+  batch_size: 64
+  epochs: 20
+  learning_rate: 0.001
+  early_stopping_patience: 5
+  device: "auto"                # auto: CUDA if available, else CPU
+
+# --- Statistical Pipeline ---
+stats:
+  rolling_window: 504           # 2-year rolling window for fitting
+  refit_interval: 50            # refit every 50 trading days
+
+  # EVT/GPD
+  evt:
+    tail_fraction: 0.05
+    min_exceedances: 20
+    surge_definition: 0.15      # same as data.surge_threshold
+
+  # Hawkes Process
+  hawkes:
+    surge_definition: 0.10      # 10% daily return = surge event
+    volume_surge_definition: 2.0
+    cluster_lookback: 60        # days for cluster_density
+    decay_beta: 0.1
+
+  # HMM Regime
+  hmm:
+    n_states: 3
+    soft_gate_min: 0.1          # minimum gate value (non-surge regime)
+    soft_gate_slope: 0.2        # gate = min + slope * prob
+
+  # Volume Filter
+  volume_filter:
+    short_window: 5
+    long_window: 20
+    threshold: 1.5              # short_avg / long_avg >= 1.5
+    penalty: 0.3                # multiply score by this if filter fails
+
+# --- Scoring Weights (to be validated on val set) ---
+scoring:
+  patchtst_weight: 0.5
+  stat_weight: 0.5
+  evt_in_stat: 0.4              # within stat_score
+  hawkes_in_stat: 0.6           # within stat_score
+
+# --- Signal Thresholds ---
+signals:
+  strong_buy: 0.6
+  buy: 0.4
+  watch: 0.2
+
+# --- Walk-Forward Validation ---
+walkforward:
+  window_months: 3              # predict 3-month blocks
+  train_years: 3.5              # rolling train window

@@ -1,0 +1,32 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": NaN,
+    "val_loss": NaN,
+    "lr": 0.0009938441702975688
+  },
+  {
+    "epoch": 2,
+    "train_loss": NaN,
+    "val_loss": NaN,
+    "lr": 0.0009755282581475768
+  },
+  {
+    "epoch": 3,
+    "train_loss": NaN,
+    "val_loss": NaN,
+    "lr": 0.0009455032620941839
+  },
+  {
+    "epoch": 4,
+    "train_loss": NaN,
+    "val_loss": NaN,
+    "lr": 0.0009045084971874737
+  },
+  {
+    "epoch": 5,
+    "train_loss": NaN,
+    "val_loss": NaN,
+    "lr": 0.0008535533905932737
+  }
+]

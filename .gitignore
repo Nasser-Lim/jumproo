@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Data (raw CSVs — too large, keep locally)
+stock_prediction/data/raw/
+stock_prediction_v2/data/
+stock_prediction_v3/data/
+stock_prediction_v4/data/
+stock_prediction_v5/data/
+
+# Processed datasets (binary, large)
+stock_prediction_v7/data/processed/*.npz
+
+# Old model checkpoints (keep only v7)
+stock_prediction/models/
+stock_prediction_v2/models/
+stock_prediction_v3/models/
+stock_prediction_v4/models/
+stock_prediction_v5/models/
+stock_prediction_v6/models/
+
+# Logs
+*.log
+output.log
+
+# Chronos zip
+chronos.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temp
+tmp/

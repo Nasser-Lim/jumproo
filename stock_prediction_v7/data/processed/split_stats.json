@@ -1,0 +1,17 @@
+{
+  "train": {
+    "total": 21894,
+    "surge": 10947,
+    "surge_rate": 0.5
+  },
+  "val": {
+    "total": 92231,
+    "surge": 5082,
+    "surge_rate": 0.05510077956435472
+  },
+  "test": {
+    "total": 58036,
+    "surge": 4184,
+    "surge_rate": 0.07209318354125026
+  }
+}
