@@ -68,8 +68,8 @@ stats:
 
 # --- Scoring Weights (to be validated on val set) ---
 scoring:
-  patchtst_weight: 0.3
-  stat_weight: 0.7
+  patchtst_weight: 0.0              # PatchTST disabled — insufficient discriminant power
+  stat_weight: 1.0
   evt_in_stat: 0.4              # within stat_score
   hawkes_in_stat: 0.6           # within stat_score
 
