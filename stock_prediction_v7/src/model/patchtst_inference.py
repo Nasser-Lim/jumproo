@@ -1,11 +1,11 @@
 """
-V7 PatchTST Inference — Load trained model and compute surge probability
+V7 PatchTST Inference — Classification model outputs surge probability directly
 """
 import numpy as np
 import torch
 from pathlib import Path
 
-from ..train.train_v7 import PatchTSTModel, get_device
+from ..train.train_v7 import PatchTSTClassifier, get_device
 
 
 class PatchTSTPredictor:
@@ -28,10 +28,11 @@ class PatchTSTPredictor:
         checkpoint = torch.load(self.model_path, map_location=self.device,
                                 weights_only=False)
         p = checkpoint["config"]
-        self.model = PatchTSTModel(
+        self.model_type = checkpoint.get("model_type", "regression")
+
+        self.model = PatchTSTClassifier(
             input_channels=p["input_channels"],
             context_length=p["context_length"],
-            prediction_length=p["prediction_length"],
             patch_length=p["patch_length"],
             stride=p["stride"],
             d_model=p["d_model"],
@@ -42,51 +43,49 @@ class PatchTSTPredictor:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
         print(f"PatchTST loaded from {self.model_path} "
-              f"(epoch {checkpoint['epoch']}, val_loss {checkpoint['val_loss']:.6f})")
+              f"(epoch {checkpoint['epoch']}, val_loss {checkpoint['val_loss']:.6f}, "
+              f"type={self.model_type})")
 
-    def predict(self, context, current_price, surge_threshold=0.15,
+    def predict(self, context, current_price=None, surge_threshold=0.15,
                 n_samples=30):
-        """Predict surge probability using MC Dropout.
+        """Predict surge probability.
+
+        For classifier model: MC Dropout on logit, then sigmoid.
+        For legacy regression model: falls back to old behavior.
 
         Args:
             context: numpy array (60, 3) — [close_norm, log_vol_norm, rsi]
-            current_price: float — latest close price (for denormalization)
-            surge_threshold: float — 15% threshold
+            current_price: float (unused for classifier, kept for API compat)
+            surge_threshold: float (unused for classifier)
             n_samples: int — MC Dropout samples
 
         Returns:
-            dict with surge_prob, forecast_return, etc.
+            dict with surge_prob, confidence_low/high, etc.
         """
         if self.model is None:
-            return {"surge_prob": 0.0, "forecast_return": 0.0,
-                    "model_available": False}
+            return {"surge_prob": 0.0, "model_available": False}
 
         context_t = torch.from_numpy(context).float().unsqueeze(0).to(self.device)
 
         # MC Dropout: enable dropout during inference
-        self.model.train()  # enable dropout
-        forecasts = []
+        self.model.train()
+        probs = []
         with torch.no_grad():
             for _ in range(n_samples):
-                pred = self.model(context_t)  # (1, 5)
-                forecasts.append(pred.cpu().numpy()[0])
+                logit = self.model(context_t)  # (1,)
+                prob = torch.sigmoid(logit).cpu().item()
+                probs.append(prob)
 
         self.model.eval()
-        forecasts = np.array(forecasts)  # (n_samples, 5)
+        probs = np.array(probs)
 
-        # Forecasts are normalized close prices (relative to current_price)
-        # Max return within 5-day window for each sample
-        max_returns = np.max(forecasts, axis=1) - 1.0  # subtract 1 since normalized
-
-        surge_prob = float(np.mean(max_returns >= surge_threshold))
-        mean_max_return = float(np.mean(max_returns))
-        median_forecast = np.median(forecasts, axis=0)
+        surge_prob = float(np.mean(probs))
+        confidence_low = float(np.percentile(probs, 10))
+        confidence_high = float(np.percentile(probs, 90))
 
         return {
             "surge_prob": surge_prob,
-            "forecast_return": mean_max_return,
-            "forecast_5d": (median_forecast * current_price).tolist(),
-            "confidence_low": float(np.percentile(max_returns, 10)),
-            "confidence_high": float(np.percentile(max_returns, 90)),
+            "confidence_low": confidence_low,
+            "confidence_high": confidence_high,
             "model_available": True,
         }

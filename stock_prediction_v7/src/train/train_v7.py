@@ -1,5 +1,8 @@
 """
-V7 PatchTST Training — CPU/GPU Auto-Select, Temporal Split
+V7 PatchTST Training — Binary Classification (Surge Detection)
+
+Changed from regression (MSE on future close) to classification (BCE on surge label).
+The model directly learns to predict surge probability.
 
 Usage:
   python stock_prediction_v7/src/train/train_v7.py
@@ -24,7 +27,7 @@ class SurgeDataset(Dataset):
         samples = np.nan_to_num(samples, nan=0.0, posinf=5.0, neginf=-5.0)
         samples = np.clip(samples, -10.0, 10.0)
         self.samples = samples
-        self.labels = data["labels"].astype(np.int64)       # (N,)
+        self.labels = data["labels"].astype(np.float32)  # (N,) float for BCE
         self.context_length = context_length
 
     def __len__(self):
@@ -33,25 +36,22 @@ class SurgeDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         context = sample[:self.context_length]   # (60, 3)
-        future = sample[self.context_length:]    # (5, 3)
         label = self.labels[idx]
         return (
             torch.from_numpy(context),   # (60, 3)
-            torch.from_numpy(future),    # (5, 3)
-            torch.tensor(label, dtype=torch.long),
+            torch.tensor(label, dtype=torch.float32),
         )
 
 
-class PatchTSTModel(nn.Module):
-    """Simplified PatchTST for surge prediction."""
+class PatchTSTClassifier(nn.Module):
+    """PatchTST for binary surge classification."""
 
-    def __init__(self, input_channels=3, context_length=60, prediction_length=5,
+    def __init__(self, input_channels=3, context_length=60,
                  patch_length=8, stride=4, d_model=128, n_heads=4, n_layers=3,
                  dropout=0.2):
         super().__init__()
         self.input_channels = input_channels
         self.context_length = context_length
-        self.prediction_length = prediction_length
         self.patch_length = patch_length
         self.stride = stride
         self.d_model = d_model
@@ -72,9 +72,9 @@ class PatchTSTModel(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
-        # Channel mixing + output head
+        # Channel mixing + classification head
         self.channel_mix = nn.Linear(input_channels * d_model, d_model)
-        self.head = nn.Linear(d_model, prediction_length)
+        self.head = nn.Linear(d_model, 1)  # single logit output
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -82,7 +82,7 @@ class PatchTSTModel(nn.Module):
         Args:
             x: (batch, context_length, input_channels)
         Returns:
-            forecast: (batch, prediction_length) — predicted close price (channel 0)
+            logit: (batch,) — raw logit for surge probability
         """
         B, L, C = x.shape
 
@@ -102,8 +102,12 @@ class PatchTSTModel(nn.Module):
         mixed = self.channel_mix(mixed)  # (B, d_model)
         mixed = self.dropout(torch.relu(mixed))
 
-        forecast = self.head(mixed)  # (B, prediction_length)
-        return forecast
+        logit = self.head(mixed).squeeze(-1)  # (B,)
+        return logit
+
+
+# Keep old name as alias for backward compatibility with inference
+PatchTSTModel = PatchTSTClassifier
 
 
 def get_device(config_device="auto"):
@@ -129,7 +133,7 @@ def train(config_path=None):
 
     device = get_device(p["device"])
     print("=" * 60)
-    print("  V7 PatchTST Training")
+    print("  V7 PatchTST Training (Binary Classification)")
     print("=" * 60)
     print(f"  Device : {device}")
     if device.type == "cuda":
@@ -148,14 +152,13 @@ def train(config_path=None):
 
     surge_rate = float(train_ds.labels.mean())
     print(f"  Train  : {len(train_ds):,} samples (surge rate: {surge_rate:.1%})")
-    print(f"  Val    : {len(val_ds):,} samples")
+    print(f"  Val    : {len(val_ds):,} samples (surge rate: {val_ds.labels.mean():.1%})")
     print("=" * 60)
 
     # Model
-    model = PatchTSTModel(
+    model = PatchTSTClassifier(
         input_channels=p["input_channels"],
         context_length=p["context_length"],
-        prediction_length=p["prediction_length"],
         patch_length=p["patch_length"],
         stride=p["stride"],
         d_model=p["d_model"],
@@ -167,6 +170,10 @@ def train(config_path=None):
     n_params = sum(p_.numel() for p_ in model.parameters())
     print(f"  Params : {n_params:,}")
     print(f"  Epochs : {p['epochs']} (early stop patience={p['early_stopping_patience']})")
+
+    # Class weight for imbalanced data
+    pos_weight = torch.tensor([(1 - surge_rate) / max(surge_rate, 1e-6)]).to(device)
+    print(f"  BCE pos_weight: {pos_weight.item():.2f}")
     print("=" * 60)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["learning_rate"],
@@ -174,7 +181,7 @@ def train(config_path=None):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=p["epochs"]
     )
-    criterion = nn.MSELoss()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -186,39 +193,62 @@ def train(config_path=None):
         # Train
         model.train()
         train_loss = 0.0
+        train_correct = 0
+        train_total = 0
         train_bar = tqdm(train_loader, desc=f"Epoch {epoch:02d}/{p['epochs']} [Train]",
                          leave=False, unit="batch")
-        for context, future, label in train_bar:
+        for context, label in train_bar:
             context = context.to(device)
-            target = future[:, :, 0].to(device)  # (B, 5) close channel
+            label = label.to(device)
 
-            pred = model(context)
-            loss = criterion(pred, target)
+            logit = model(context)
+            loss = criterion(logit, label)
 
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+
             batch_loss = loss.item()
             train_loss += batch_loss * context.size(0)
-            train_bar.set_postfix(loss=f"{batch_loss:.5f}")
+            preds = (torch.sigmoid(logit) >= 0.5).float()
+            train_correct += (preds == label).sum().item()
+            train_total += label.size(0)
+            train_bar.set_postfix(loss=f"{batch_loss:.4f}")
 
         train_loss /= len(train_ds)
+        train_acc = train_correct / train_total
 
         # Validate
         model.eval()
         val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        val_tp = 0
+        val_fp = 0
+        val_fn = 0
         val_bar = tqdm(val_loader, desc=f"Epoch {epoch:02d}/{p['epochs']} [Val]  ",
                        leave=False, unit="batch")
         with torch.no_grad():
-            for context, future, label in val_bar:
+            for context, label in val_bar:
                 context = context.to(device)
-                target = future[:, :, 0].to(device)
-                pred = model(context)
-                loss = criterion(pred, target)
+                label = label.to(device)
+                logit = model(context)
+                loss = criterion(logit, label)
                 val_loss += loss.item() * context.size(0)
-                val_bar.set_postfix(loss=f"{loss.item():.5f}")
+
+                preds = (torch.sigmoid(logit) >= 0.5).float()
+                val_correct += (preds == label).sum().item()
+                val_total += label.size(0)
+                val_tp += ((preds == 1) & (label == 1)).sum().item()
+                val_fp += ((preds == 1) & (label == 0)).sum().item()
+                val_fn += ((preds == 0) & (label == 1)).sum().item()
+                val_bar.set_postfix(loss=f"{loss.item():.4f}")
+
         val_loss /= len(val_ds)
+        val_acc = val_correct / val_total
+        val_precision = val_tp / max(val_tp + val_fp, 1)
+        val_recall = val_tp / max(val_tp + val_fn, 1)
 
         scheduler.step()
         elapsed = time.time() - t0
@@ -226,12 +256,16 @@ def train(config_path=None):
 
         flag = " *" if val_loss < best_val_loss else f"  (patience {patience_counter+1}/{p['early_stopping_patience']})"
         print(f"Epoch {epoch:02d}/{p['epochs']} | "
-              f"Train {train_loss:.5f} | Val {val_loss:.5f} | "
+              f"Train {train_loss:.4f} acc={train_acc:.1%} | "
+              f"Val {val_loss:.4f} acc={val_acc:.1%} prec={val_precision:.1%} rec={val_recall:.1%} | "
               f"LR {lr_now:.2e} | {elapsed:.0f}s{flag}")
 
         history.append({
-            "epoch": epoch, "train_loss": train_loss,
-            "val_loss": val_loss, "lr": lr_now, "elapsed": elapsed
+            "epoch": epoch, "train_loss": train_loss, "train_acc": train_acc,
+            "val_loss": val_loss, "val_acc": val_acc,
+            "val_precision": val_precision, "val_recall": val_recall,
+            "val_tp": val_tp, "val_fp": val_fp, "val_fn": val_fn,
+            "lr": lr_now, "elapsed": elapsed
         })
 
         # Early stopping
@@ -241,8 +275,11 @@ def train(config_path=None):
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "config": p,
+                "model_type": "classifier",
                 "epoch": epoch,
                 "val_loss": val_loss,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
             }, model_dir / "best_model.pt")
         else:
             patience_counter += 1
@@ -254,6 +291,7 @@ def train(config_path=None):
     torch.save({
         "model_state_dict": model.state_dict(),
         "config": p,
+        "model_type": "classifier",
         "epoch": epoch,
         "val_loss": val_loss,
     }, model_dir / "final_model.pt")
@@ -269,12 +307,9 @@ def train(config_path=None):
     print("=" * 60)
     print(f"  Total time    : {total_time/60:.1f} min ({total_time:.0f}s)")
     print(f"  Epochs ran    : {len(history)}/{p['epochs']}")
-    print(f"  Best epoch    : {best_epoch['epoch']} (val_loss={best_epoch['val_loss']:.6f})")
-    print(f"  Final train   : {history[-1]['train_loss']:.6f}")
-    print(f"  Final val     : {history[-1]['val_loss']:.6f}")
-    if len(history) >= 2:
-        improvement = history[0]['val_loss'] - best_epoch['val_loss']
-        print(f"  Val improved  : {improvement:.6f} from epoch 1")
+    print(f"  Best epoch    : {best_epoch['epoch']} (val_loss={best_epoch['val_loss']:.4f})")
+    print(f"  Best precision: {best_epoch['val_precision']:.2%}")
+    print(f"  Best recall   : {best_epoch['val_recall']:.2%}")
     print(f"  Model saved   : {model_dir / 'best_model.pt'}")
     print("=" * 60)
 
@@ -282,7 +317,7 @@ def train(config_path=None):
     best_ckpt = torch.load(model_dir / "best_model.pt", map_location=device,
                            weights_only=False)
     print(f"\n  [Sanity] Best model checkpoint: epoch={best_ckpt['epoch']}, "
-          f"val_loss={best_ckpt['val_loss']:.6f}")
+          f"val_loss={best_ckpt['val_loss']:.6f}, type={best_ckpt.get('model_type', 'regression')}")
 
 
 if __name__ == "__main__":

@@ -295,7 +295,8 @@ def main():
                     current_idx=idx
                 )
                 result = predictor.combine_scores(pt_result["surge_prob"], stat_result)
-                result["forecast_5d"] = pt_result.get("forecast_5d")
+                result["pt_confidence_low"] = pt_result.get("confidence_low")
+                result["pt_confidence_high"] = pt_result.get("confidence_high")
             else:
                 result = predictor.predict_stat_only(
                     features["returns"], features["volatility"],
@@ -329,12 +330,10 @@ def main():
                       delta=f"{price_change:+.2%}")
             c2.metric("분석 일자", str(pd.Timestamp(features["dates"][idx]).date()))
 
-            if result.get("forecast_5d"):
-                st.markdown("**5일 예측 가격**")
-                forecast = result["forecast_5d"]
-                cols = st.columns(5)
-                for j, (col, p) in enumerate(zip(cols, forecast)):
-                    col.metric(f"D+{j+1}", f"₩{p:,.0f}")
+            if result.get("pt_confidence_low") is not None:
+                c3, c4 = st.columns(2)
+                c3.metric("PT 신뢰구간(하)", f"{result['pt_confidence_low']:.1%}")
+                c4.metric("PT 신뢰구간(상)", f"{result['pt_confidence_high']:.1%}")
 
         st.markdown("---")
         render_component_breakdown(result)
