@@ -300,7 +300,8 @@ def main():
         context_length = cfg["data"]["context_length"]
         surge_threshold = cfg["data"]["surge_threshold"]
 
-        idx = len(df) - cfg["data"]["prediction_length"] - 1
+        # Use latest data point for live analysis (not backtest offset)
+        idx = len(df) - 1
 
         # Fit & predict
         predictor.fit_stats(
