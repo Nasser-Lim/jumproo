@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 import yaml
+import json
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -75,13 +76,30 @@ def load_predictor():
 
 
 @st.cache_data
+def load_ticker_names():
+    names_path = Path(__file__).parent.parent.parent / "configs" / "ticker_names.json"
+    if names_path.exists():
+        with open(names_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+@st.cache_data
 def get_stock_list():
     config_path = Path(__file__).parent.parent.parent / "configs" / "v7_config.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     raw_dir = Path(__file__).parent.parent.parent / cfg["data"]["raw_dir"]
     files = sorted(raw_dir.glob("*.csv"))
-    return {f.stem: str(f) for f in files}
+    ticker_names = load_ticker_names()
+    # {display_label: csv_path}
+    stock_map = {}
+    for f in files:
+        ticker = f.stem
+        name = ticker_names.get(ticker, ticker)
+        label = f"{name} ({ticker})" if name != ticker else ticker
+        stock_map[label] = {"path": str(f), "ticker": ticker, "name": name}
+    return stock_map
 
 
 def render_signal_badge(signal, score):
@@ -249,8 +267,13 @@ def main():
 
     if page == "🔍 종목 분석":
         st.sidebar.markdown("### 종목 선택")
-        ticker = st.sidebar.selectbox("종목 코드", list(stocks.keys()),
-                                       index=0)
+        stock_labels = list(stocks.keys())
+        selected_label = st.sidebar.selectbox("종목 검색 (한글/코드)", stock_labels,
+                                               index=0)
+        stock_info = stocks[selected_label]
+        ticker = stock_info["ticker"]
+        stock_name = stock_info["name"]
+
         use_pt = st.sidebar.checkbox("PatchTST 포함",
                                       value=patchtst.model is not None,
                                       disabled=patchtst.model is None)
@@ -268,7 +291,7 @@ def main():
         )
 
         # Main content
-        csv_path = stocks[ticker]
+        csv_path = stock_info["path"]
         df = load_raw_csv(csv_path)
         features = prepare_features(df)
 
@@ -315,7 +338,8 @@ def main():
 
         with top_left:
             recent_df = df.tail(120).copy()
-            fig = render_price_chart(recent_df, ticker, result)
+            chart_title = f"{stock_name} ({ticker})"
+            fig = render_price_chart(recent_df, chart_title, result)
             st.plotly_chart(fig, use_container_width=True)
 
         with top_right:
