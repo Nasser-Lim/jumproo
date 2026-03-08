@@ -227,7 +227,20 @@ def train(config_path=None):
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=p["learning_rate"],
                                    weight_decay=p.get("weight_decay", 0.01))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=p["epochs"])
+    sched_type = p.get("scheduler", "cosine")
+    if sched_type == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min',
+            factor=p.get("scheduler_factor", 0.5),
+            patience=p.get("scheduler_patience", 5),
+            min_lr=1e-6,
+        )
+        print(f"  Scheduler: ReduceLROnPlateau (factor={p.get('scheduler_factor', 0.5)}, "
+              f"patience={p.get('scheduler_patience', 5)})")
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=p["epochs"])
+        print(f"  Scheduler: CosineAnnealingLR")
+    grad_clip = p.get("grad_clip", 1.0)
 
     if p["loss"] == "huber":
         criterion = nn.HuberLoss(delta=p.get("huber_delta", 0.1), reduction='none')
@@ -262,7 +275,7 @@ def train(config_path=None):
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
 
             train_loss += loss.item() * context.size(0)
@@ -314,9 +327,13 @@ def train(config_path=None):
         else:
             corr = 0.0
 
-        scheduler.step()
+        if sched_type == "plateau":
+            scheduler.step(val_loss)
+            lr_now = optimizer.param_groups[0]['lr']
+        else:
+            scheduler.step()
+            lr_now = scheduler.get_last_lr()[0]
         elapsed = time.time() - t0
-        lr_now = scheduler.get_last_lr()[0]
 
         flag = " *" if val_loss < best_val_loss else f"  (patience {patience_counter+1}/{p['early_stopping_patience']})"
         print(f"Epoch {epoch:02d}/{p['epochs']} | "

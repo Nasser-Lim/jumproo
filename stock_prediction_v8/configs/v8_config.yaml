@@ -38,10 +38,14 @@ patchtst:
 
   # Training
   batch_size: 128
-  epochs: 40
-  learning_rate: 0.0005
+  epochs: 80
+  learning_rate: 0.0001            # slower LR for better convergence (was 5e-4)
   weight_decay: 0.01
-  early_stopping_patience: 8
+  early_stopping_patience: 20      # longer patience (was 8)
+  scheduler: "plateau"             # ReduceLROnPlateau (was CosineAnnealing)
+  scheduler_factor: 0.5            # LR *= 0.5 on plateau
+  scheduler_patience: 5            # wait 5 epochs before reducing LR
+  grad_clip: 0.5                   # tighter gradient clipping (was 1.0)
   device: "auto"
 
   # Regression target
@@ -50,7 +54,7 @@ patchtst:
   huber_delta: 0.1                # delta for huber loss
 
   # Surge weighting — upweight samples with high returns
-  surge_weight: 3.0               # weight for samples with return >= surge_threshold
+  surge_weight: 5.0               # stronger surge emphasis (was 3.0)
   normal_weight: 1.0
 
 # --- Statistical Pipeline (same as v7) ---
