@@ -13,8 +13,14 @@ from pathlib import Path
 import yaml
 import json
 import sys
+import warnings
+import logging
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Suppress noisy warnings during scanning
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+logging.getLogger("hmmlearn").setLevel(logging.ERROR)
 
 from src.model.predictor_v7 import SurgePredictor
 from src.model.patchtst_inference import PatchTSTPredictor
@@ -145,7 +151,7 @@ def render_component_breakdown(result):
     with col2:
         st.markdown("#### 최종 스코어 구성")
         if pt is not None:
-            st.metric("PatchTST 급등 확률", f"{pt:.1%}")
+            st.metric("PatchTST 급등 확률 (참고용, 미반영)", f"{pt:.1%}")
         st.metric("통계 점수", f"{result.get('stat_score', 0):.3f}")
         st.metric("국면", result.get("regime", "unknown"))
         st.metric("클러스터 밀도", f"{result.get('cluster_density', 0):.2f}")
@@ -202,6 +208,355 @@ def render_price_chart(df, ticker, result):
     fig.update_yaxes(title_text="Volume", row=2, col=1)
 
     return fig
+
+
+def scan_all_stocks(stocks, config_path):
+    """Scan all stocks and return sorted DataFrame of scores."""
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    rows = []
+    progress = st.progress(0, text="전체 종목 스캔 중...")
+    total = len(stocks)
+
+    for i, (label, info) in enumerate(stocks.items()):
+        progress.progress((i + 1) / total, text=f"스캔 중: {info['name']} ({i+1}/{total})")
+        try:
+            df = load_raw_csv(info["path"])
+            if len(df) < 120:
+                continue
+            features = prepare_features(df)
+            idx = len(df) - 1
+
+            predictor = SurgePredictor(config_path)
+            predictor.fit_stats(
+                features["returns"], features["volatility"],
+                features["volume_change"], current_idx=idx
+            )
+            result = predictor.predict_stat_only(
+                features["returns"], features["volatility"],
+                features["volume_change"], features["volume"],
+                current_idx=idx
+            )
+
+            current_price = features["close"][idx]
+            prev_price = features["close"][idx - 1] if idx > 0 else current_price
+            price_change = (current_price - prev_price) / prev_price if prev_price > 0 else 0
+
+            # 5-day return
+            if idx >= 5:
+                p5 = features["close"][idx - 5]
+                ret_5d = (current_price - p5) / p5 if p5 > 0 else 0
+            else:
+                ret_5d = 0
+
+            rows.append({
+                "종목명": info["name"],
+                "코드": info["ticker"],
+                "현재가": current_price,
+                "등락률": price_change,
+                "5일등락": ret_5d,
+                "최종스코어": result["final_score"],
+                "시그널": result["signal"],
+                "EVT": result.get("evt_prob", 0),
+                "Hawkes": result.get("hawkes_score", 0),
+                "HMM게이트": result.get("gate", 0),
+                "거래량필터": result.get("vol_filter", 0),
+                "국면": result.get("regime", ""),
+                "클러스터밀도": result.get("cluster_density", 0),
+                "분석일": str(pd.Timestamp(features["dates"][idx]).date()),
+            })
+        except Exception:
+            continue
+
+    progress.empty()
+
+    if not rows:
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(rows)
+    result_df = result_df.sort_values("최종스코어", ascending=False).reset_index(drop=True)
+    result_df.index += 1  # 1-based ranking
+    return result_df
+
+
+def generate_strategy_guide(signal, score, chg_1d, chg_5d, cluster, current_price,
+                            evt, hawkes, gate, regime):
+    """Generate detailed buy strategy guide for individual stock analysis."""
+    stop_loss = current_price * 0.95
+    tp1 = current_price * 1.07
+    tp2 = current_price * 1.10
+    tp3 = current_price * 1.15
+
+    # Signal header
+    signal_desc = {
+        "STRONG_BUY": ("🔴 STRONG_BUY", "이미 급등이 진행 중. 추격매수 자제, 기보유 시 분할매도 준비."),
+        "BUY": ("🟠 BUY", "주력 진입 대상. 단, 5일 수익률로 이미 올랐는지 반드시 확인."),
+        "WATCH": ("🔵 WATCH", "매수 금지. 워치리스트에만 등록."),
+        "NEUTRAL": ("⚪ NEUTRAL", "시그널 없음. 관망."),
+    }
+    header, principle = signal_desc.get(signal, ("⚪ NEUTRAL", "시그널 없음"))
+
+    lines = []
+    lines.append(f"### 📋 매수 전략 가이드")
+    lines.append(f"**{header}** (스코어 {score:.1%})")
+    lines.append(f"> {principle}")
+    lines.append("")
+
+    # Momentum summary
+    lines.append("| 항목 | 값 |")
+    lines.append("|------|-----|")
+    lines.append(f"| 당일 등락 | {chg_1d:+.2%} |")
+    lines.append(f"| 5일 등락 | {chg_5d:+.2%} |")
+    lines.append(f"| 클러스터 밀도 | {cluster:.2f} |")
+    lines.append(f"| EVT 꼬리확률 | {evt:.4f} |")
+    lines.append(f"| Hawkes 군집도 | {hawkes:.4f} |")
+    lines.append(f"| HMM 국면 | {regime} (게이트 {gate:.3f}) |")
+    lines.append("")
+
+    if signal == "STRONG_BUY":
+        # Detailed STRONG_BUY analysis
+        lines.append("#### ⚠️ 판단")
+        if chg_5d > 0.30:
+            lines.append(f"- 5일간 **+{chg_5d:.1%} 급등** 후 — **추격매수 금지**")
+        if chg_1d < -0.10:
+            lines.append(f"- 당일 **{chg_1d:+.1%} 급락 중** — 나이프 잡기 위험, 관망")
+        elif chg_1d > 0.10:
+            lines.append(f"- 당일 **{chg_1d:+.1%} 급등** — 보유 중이면 익절 타이밍")
+        if chg_5d <= 0.30 and abs(chg_1d) <= 0.10:
+            lines.append(f"- 극단적 변동성 국면. 소량만 진입 (비중 3%)")
+        lines.append("")
+        lines.append("#### 🎯 포지션 가이드")
+        lines.append(f"- **진입 비중**: 최대 3% (고위험)")
+        lines.append(f"- **손절가**: ₩{stop_loss:,.0f} (-5%)")
+        lines.append(f"- **1차 익절**: ₩{tp1:,.0f} (+7%) — 포지션 50% 정리")
+        lines.append(f"- **2차 익절**: ₩{tp3:,.0f} (+15%) — 잔여 전량 정리")
+        lines.append(f"- **시간 손절**: 5거래일 내 +5% 미도달 시 전량 정리")
+
+    elif signal == "BUY":
+        lines.append("#### 📊 판단")
+
+        # Grade classification
+        if chg_1d > 0.10:
+            grade = "B"
+            lines.append(f"- **B등급** (조건부 진입): 당일 **{chg_1d:+.1%} 급등**")
+            lines.append(f"- 내일 시초 눌림목 (-2~3% 약세 출발) 확인 후 진입")
+            lines.append(f"- 오늘 진입 금지")
+            weight = 3
+        elif chg_5d > 0.25:
+            grade = "B"
+            lines.append(f"- **B등급** (조건부): 5일 **+{chg_5d:.1%}** 이미 급등")
+            lines.append(f"- 추격매수 자제. 눌림목 대기")
+            weight = 3
+        elif cluster < 0.7:
+            grade = "C"
+            lines.append(f"- **C등급** (약한 신호): 클러스터 밀도 {cluster:.2f} 낮음")
+            lines.append(f"- 신호 약함. 관망 추천")
+            weight = 0
+        elif chg_5d < -0.05 and cluster >= 1.0:
+            grade = "A"
+            lines.append(f"- **A등급** (진입 추천): 조정 후 반등 시점")
+            lines.append(f"- 5일 {chg_5d:+.1%} 조정 + 클러스터 {cluster:.2f} 높음")
+            weight = 5
+        elif abs(chg_5d) <= 0.10 and cluster >= 1.0:
+            grade = "A"
+            lines.append(f"- **A등급** (진입 추천): 아직 초기 단계")
+            lines.append(f"- 5일 등락 {chg_5d:+.1%}로 소폭, 클러스터 {cluster:.2f} 높음")
+            weight = 5
+        else:
+            grade = "B"
+            lines.append(f"- **B등급** (조건부 진입)")
+            weight = 3
+
+        lines.append("")
+        lines.append("#### 🎯 포지션 가이드")
+        if weight > 0:
+            lines.append(f"- **진입 비중**: {weight}%")
+            lines.append(f"- **손절가**: ₩{stop_loss:,.0f} (-5%)")
+            lines.append(f"- **1차 익절**: ₩{tp1:,.0f} (+7%) — 포지션 50% 정리")
+            lines.append(f"- **2차 익절**: ₩{tp2:,.0f} (+10%) — 잔여 전량 정리")
+            lines.append(f"- **시간 손절**: 5거래일 내 +5% 미도달 시 전량 정리")
+        else:
+            lines.append(f"- **진입 비중**: 0% (관망)")
+            lines.append(f"- 클러스터 밀도 1.0 이상 + BUY 유지 시 재검토")
+
+    elif signal == "WATCH":
+        lines.append("#### 📊 판단")
+        lines.append("- **매수 금지**. 워치리스트에만 등록")
+        if chg_5d < -0.15:
+            lines.append(f"- 5일 **{chg_5d:+.1%} 급락** 중. BUY 전환 시 재검토")
+        else:
+            lines.append("- 신호 약함. 추가 모멘텀 확인 필요")
+        lines.append("")
+        lines.append("#### 🎯 포지션 가이드")
+        lines.append("- **진입 비중**: 0% (관망)")
+        lines.append("- BUY 전환 시 재검토")
+
+    else:  # NEUTRAL
+        lines.append("#### 📊 판단")
+        lines.append("- 시그널 없음. 관망")
+        lines.append("")
+        lines.append("#### 🎯 포지션 가이드")
+        lines.append("- **진입 비중**: 0%")
+
+    # Risk management footer (always shown)
+    lines.append("")
+    lines.append("---")
+    lines.append("#### ⚡ 리스크 관리 원칙")
+    lines.append("| 규칙 | 기준 |")
+    lines.append("|------|------|")
+    lines.append("| 손절 | 진입가 -5% |")
+    lines.append("| 1차 익절 | +7~10% (포지션 50% 정리) |")
+    lines.append("| 2차 익절 | +15% (잔여 전량 정리) |")
+    lines.append("| 시간 손절 | 5거래일 내 +5% 미도달 시 전량 정리 |")
+    lines.append("| 1종목 최대 비중 | 총 자산의 5~10% |")
+    lines.append("| 동시 보유 | 최대 3~5종목 |")
+
+    return "\n".join(lines)
+
+
+def generate_comment(row):
+    """Generate actionable comment based on signal, price momentum, and indicators."""
+    signal = row["시그널"]
+    chg_1d = row["등락률"]
+    chg_5d = row["5일등락"]
+    cluster = row["클러스터밀도"]
+    score = row["최종스코어"]
+
+    parts = []
+
+    # STRONG_BUY specific warnings
+    if signal == "STRONG_BUY":
+        if chg_5d > 0.30:
+            parts.append(f"5일 +{chg_5d:.0%} 급등 후. 추격매수 금지")
+        if chg_1d < -0.10:
+            parts.append(f"당일 {chg_1d:+.0%} 급락 중. 나이프 잡기 위험")
+        elif chg_1d > 0.10:
+            parts.append(f"당일 {chg_1d:+.0%} 급등. 보유 시 익절 검토")
+        if not parts:
+            parts.append("극단적 변동성. 소량만 진입 (비중 3%)")
+        parts.append("손절 -5%")
+
+    # BUY
+    elif signal == "BUY":
+        if chg_1d > 0.10:
+            parts.append(f"당일 {chg_1d:+.0%} 급등. 내일 눌림목 확인 후 진입")
+        elif chg_5d > 0.25:
+            parts.append(f"5일 +{chg_5d:.0%} 이미 급등. 추격 자제")
+        elif chg_5d < -0.05 and cluster >= 1.0:
+            parts.append("조정 후 반등 시점. 1차 진입 추천 (비중 5%)")
+        elif abs(chg_5d) <= 0.10 and cluster >= 1.0:
+            parts.append("아직 초기 단계. 1차 진입 추천 (비중 5%)")
+        elif cluster < 0.7:
+            parts.append("클러스터 밀도 낮음. 신호 약함. 관망")
+        else:
+            parts.append("조건부 진입 (비중 3%)")
+        parts.append("손절 -5%, 익절 +10%")
+
+    # WATCH
+    elif signal == "WATCH":
+        parts.append("매수 금지. 워치리스트만")
+        if chg_5d < -0.15:
+            parts.append(f"5일 {chg_5d:+.0%} 급락 중. BUY 전환 시 재검토")
+        else:
+            parts.append("신호 약함. 관망")
+
+    # NEUTRAL
+    else:
+        parts.append("신호 없음")
+
+    return " / ".join(parts)
+
+
+def render_screening_page():
+    """Full stock screening with pagination."""
+    st.title("🔎 전체 종목 스크리닝")
+
+    config_path = Path(__file__).parent.parent.parent / "configs" / "v7_config.yaml"
+    stocks = get_stock_list()
+
+    # Signal filter
+    col_f1, col_f2 = st.columns([1, 3])
+    with col_f1:
+        signal_filter = st.multiselect(
+            "시그널 필터",
+            ["STRONG_BUY", "BUY", "WATCH", "NEUTRAL"],
+            default=["STRONG_BUY", "BUY", "WATCH"],
+        )
+
+    # Scan button with session state caching
+    if "scan_result" not in st.session_state:
+        st.session_state.scan_result = None
+
+    if st.button("전체 종목 스캔 시작", type="primary"):
+        st.session_state.scan_result = scan_all_stocks(stocks, config_path)
+
+    result_df = st.session_state.scan_result
+    if result_df is None or result_df.empty:
+        st.info("'전체 종목 스캔 시작' 버튼을 눌러 389개 종목을 분석하세요.")
+        return
+
+    # Apply signal filter
+    filtered = result_df[result_df["시그널"].isin(signal_filter)].copy()
+
+    # Summary metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("전체 종목", f"{len(result_df)}")
+    c2.metric("STRONG_BUY", f"{(result_df['시그널'] == 'STRONG_BUY').sum()}")
+    c3.metric("BUY", f"{(result_df['시그널'] == 'BUY').sum()}")
+    c4.metric("WATCH", f"{(result_df['시그널'] == 'WATCH').sum()}")
+
+    st.markdown(f"**필터 결과: {len(filtered)}개 종목**")
+
+    if filtered.empty:
+        st.warning("선택한 시그널에 해당하는 종목이 없습니다.")
+        return
+
+    # Pagination
+    page_size = 20
+    total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
+    page_num = st.number_input("페이지", min_value=1, max_value=total_pages, value=1, step=1)
+
+    start = (page_num - 1) * page_size
+    end = min(start + page_size, len(filtered))
+    page_df = filtered.iloc[start:end].copy()
+
+    # Generate comments
+    page_df["판단"] = page_df.apply(generate_comment, axis=1)
+
+    # Format for display
+    display_df = page_df.copy()
+    display_df["현재가"] = display_df["현재가"].apply(lambda x: f"₩{x:,.0f}")
+    display_df["등락률"] = display_df["등락률"].apply(lambda x: f"{x:+.2%}")
+    display_df["5일등락"] = display_df["5일등락"].apply(lambda x: f"{x:+.2%}")
+    display_df["최종스코어"] = display_df["최종스코어"].apply(lambda x: f"{x:.1%}")
+    display_df["EVT"] = display_df["EVT"].apply(lambda x: f"{x:.3f}")
+    display_df["Hawkes"] = display_df["Hawkes"].apply(lambda x: f"{x:.3f}")
+    display_df["HMM게이트"] = display_df["HMM게이트"].apply(lambda x: f"{x:.3f}")
+    display_df["거래량필터"] = display_df["거래량필터"].apply(lambda x: f"{x:.2f}")
+    display_df["클러스터밀도"] = display_df["클러스터밀도"].apply(lambda x: f"{x:.2f}")
+
+    # Reorder columns to put 판단 after 시그널
+    col_order = ["종목명", "코드", "현재가", "등락률", "5일등락", "최종스코어", "시그널", "판단",
+                 "EVT", "Hawkes", "HMM게이트", "거래량필터", "국면", "클러스터밀도", "분석일"]
+    display_df = display_df[[c for c in col_order if c in display_df.columns]]
+
+    def color_signal(val):
+        colors = {
+            "STRONG_BUY": "background-color: #ff4444; color: white",
+            "BUY": "background-color: #ff8c00; color: white",
+            "WATCH": "background-color: #1890ff; color: white",
+            "NEUTRAL": "background-color: #bfbfbf; color: white",
+        }
+        return colors.get(val, "")
+
+    st.dataframe(
+        display_df.style.map(color_signal, subset=["시그널"]),
+        use_container_width=True,
+        height=min(len(page_df) * 38 + 40, 800),
+    )
+
+    st.caption(f"페이지 {page_num}/{total_pages} (전체 {len(filtered)}개 중 {start+1}~{end})")
 
 
 def render_backtest_summary():
@@ -263,7 +618,7 @@ def main():
     st.sidebar.title("📈 Surge Predictor v7")
     st.sidebar.markdown("---")
 
-    page = st.sidebar.radio("페이지", ["🔍 종목 분석", "📊 백테스트 결과"])
+    page = st.sidebar.radio("페이지", ["🔍 종목 분석", "🔎 전체 스크리닝", "📊 백테스트 결과"])
 
     if page == "🔍 종목 분석":
         st.sidebar.markdown("### 종목 선택")
@@ -356,12 +711,36 @@ def main():
             c2.metric("분석 일자", str(pd.Timestamp(features["dates"][idx]).date()))
 
             if result.get("pt_confidence_low") is not None:
+                st.caption("⚠️ PatchTST — 참고용 (미반영)")
                 c3, c4 = st.columns(2)
-                c3.metric("PT 신뢰구간(하)", f"{result['pt_confidence_low']:.1%}")
-                c4.metric("PT 신뢰구간(상)", f"{result['pt_confidence_high']:.1%}")
+                c3.metric("PT 급등확률", f"{result.get('patchtst_prob', 0):.1%}")
+                c4.metric("PT 신뢰구간", f"{result['pt_confidence_low']:.1%} ~ {result['pt_confidence_high']:.1%}")
 
         st.markdown("---")
         render_component_breakdown(result)
+
+        # Buy strategy guide
+        st.markdown("---")
+        current_price_for_guide = features["close"][idx]
+        chg_1d = (features["close"][idx] - features["close"][idx - 1]) / features["close"][idx - 1] if idx > 0 else 0
+        chg_5d = (features["close"][idx] - features["close"][idx - 5]) / features["close"][idx - 5] if idx >= 5 else 0
+
+        guide_text = generate_strategy_guide(
+            signal=result["signal"],
+            score=result["final_score"],
+            chg_1d=chg_1d,
+            chg_5d=chg_5d,
+            cluster=result.get("cluster_density", 0),
+            current_price=current_price_for_guide,
+            evt=result.get("evt_prob", 0),
+            hawkes=result.get("hawkes_score", 0),
+            gate=result.get("gate", 1.0),
+            regime=result.get("regime", "unknown"),
+        )
+        st.markdown(guide_text)
+
+    elif page == "🔎 전체 스크리닝":
+        render_screening_page()
 
     elif page == "📊 백테스트 결과":
         st.title("📊 V7 백테스트 결과")

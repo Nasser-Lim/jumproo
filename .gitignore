@@ -23,14 +23,16 @@ stock_prediction_v5/data/
 
 # Processed datasets (binary, large)
 stock_prediction_v7/data/processed/*.npz
+stock_prediction_v8/data/processed/*.npz
 
-# Old model checkpoints (keep only v7)
+# Model checkpoints (trained on GPU machine)
 stock_prediction/models/
 stock_prediction_v2/models/
 stock_prediction_v3/models/
 stock_prediction_v4/models/
 stock_prediction_v5/models/
 stock_prediction_v6/models/
+stock_prediction_v8/models/
 
 # Logs
 *.log

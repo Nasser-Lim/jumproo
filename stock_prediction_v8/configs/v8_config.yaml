@@ -1,0 +1,95 @@
+# ============================================================
+# Stock Prediction v8 Configuration
+# PatchTST Regression + Sector Embedding + Market Context
+# ============================================================
+
+# --- Data Split (temporal, no shuffle) ---
+data:
+  raw_dir: "../stock_prediction/data/raw"
+  processed_dir: "data/processed"
+  market_index_path: "data/market_index.csv"
+  sector_map_path: "configs/sector_map.json"
+  train_end: "2024-06-30"
+  val_start: "2024-07-01"
+  val_end: "2025-06-30"
+  test_start: "2025-07-01"
+  context_length: 60
+  prediction_length: 5
+  surge_threshold: 0.15
+  min_data_days: 120
+
+# --- PatchTST V8 Regression Model ---
+patchtst:
+  # Time-series channels (per-stock)
+  ts_channels: 8                # close_norm, log_vol, RSI, bollinger_pos, macd_norm,
+                                 # kospi_ret, kosdaq_ret, market_vol
+  # Sector embedding
+  num_sectors: 170               # ~162 sectors + padding
+  sector_embed_dim: 16           # learnable sector embedding
+
+  # Architecture
+  context_length: 60
+  patch_length: 10
+  stride: 5
+  d_model: 128
+  n_heads: 4
+  n_layers: 4
+  dropout: 0.25
+
+  # Training
+  batch_size: 128
+  epochs: 40
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  early_stopping_patience: 8
+  device: "auto"
+
+  # Regression target
+  target: "max_return_5d"         # max return within 5 days
+  loss: "huber"                   # huber loss (robust to outliers)
+  huber_delta: 0.1                # delta for huber loss
+
+  # Surge weighting — upweight samples with high returns
+  surge_weight: 3.0               # weight for samples with return >= surge_threshold
+  normal_weight: 1.0
+
+# --- Statistical Pipeline (same as v7) ---
+stats:
+  rolling_window: 504
+  refit_interval: 50
+  evt:
+    tail_fraction: 0.05
+    min_exceedances: 20
+    surge_definition: 0.15
+  hawkes:
+    surge_definition: 0.10
+    volume_surge_definition: 2.0
+    cluster_lookback: 60
+    decay_beta: 0.1
+  hmm:
+    n_states: 3
+    soft_gate_min: 0.1
+    soft_gate_slope: 0.2
+  volume_filter:
+    short_window: 5
+    long_window: 20
+    threshold: 1.5
+    penalty: 0.3
+
+# --- Scoring Weights ---
+scoring:
+  patchtst_weight: 0.3            # re-enable PatchTST with regression model
+  stat_weight: 0.7
+  evt_in_stat: 0.4
+  hawkes_in_stat: 0.6
+
+# --- Signal Thresholds ---
+signals:
+  strong_buy: 0.6
+  buy: 0.4
+  watch: 0.2
+
+# --- Walk-Forward Validation ---
+walkforward:
+  window_months: 3
+  train_years: 3.5

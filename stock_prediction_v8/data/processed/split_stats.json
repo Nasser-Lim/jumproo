@@ -1,0 +1,31 @@
+{
+  "train": {
+    "total": 468790,
+    "surge_count": 14515,
+    "surge_rate": 0.030962691183685657,
+    "mean_return": 0.02824612334370613,
+    "std_return": 0.058073740452528
+  },
+  "val": {
+    "total": 155259,
+    "surge_count": 7169,
+    "surge_rate": 0.04617445687528581,
+    "mean_return": 0.03470001742243767
+  },
+  "test": {
+    "total": 103595,
+    "surge_count": 8081,
+    "surge_rate": 0.07800569525556253,
+    "mean_return": 0.046312227845191956
+  },
+  "channels": [
+    "close_norm",
+    "log_vol_norm",
+    "rsi",
+    "bollinger_pos",
+    "macd_norm",
+    "kospi_return",
+    "kosdaq_return",
+    "market_vol"
+  ]
+}
