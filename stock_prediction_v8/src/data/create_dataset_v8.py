@@ -64,7 +64,7 @@ def compute_macd(prices, fast=12, slow=26, signal=9):
     macd = ema_fast - ema_slow
     # Normalize by price to make cross-stock comparable
     macd_norm = macd / s
-    result = macd_norm.values
+    result = macd_norm.values.copy()
     # First slow-1 values are warming up
     result[:slow] = np.nan
     return result

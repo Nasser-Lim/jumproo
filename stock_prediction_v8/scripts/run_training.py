@@ -37,7 +37,7 @@ def check_environment():
 
     if torch.cuda.is_available():
         print(f"  GPU     : {torch.cuda.get_device_name(0)}")
-        vram = torch.cuda.get_device_properties(0).total_mem / 1e9
+        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"  VRAM    : {vram:.1f} GB")
     else:
         print("  WARNING: CUDA not available. Training on CPU will be very slow!")
