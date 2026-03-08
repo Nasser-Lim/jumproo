@@ -9,6 +9,10 @@
 
 ### 대시보드 실행 (로컬)
 ```bash
+# V8 (최신 — PatchTST 회귀 + 섹터 임베딩)
+streamlit run stock_prediction_v8/src/app/app_v8.py
+
+# V7 (구버전)
 streamlit run stock_prediction_v7/src/app/app_v7.py
 ```
 
