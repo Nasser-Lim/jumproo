@@ -10,13 +10,13 @@
     "total": 155259,
     "surge_count": 7169,
     "surge_rate": 0.04617445687528581,
-    "mean_return": 0.03470001742243767
+    "mean_return": 0.034700021147727966
   },
   "test": {
     "total": 103595,
     "surge_count": 8081,
     "surge_rate": 0.07800569525556253,
-    "mean_return": 0.046312227845191956
+    "mean_return": 0.04631222411990166
   },
   "channels": [
     "close_norm",

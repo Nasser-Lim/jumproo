@@ -1,0 +1,91 @@
+{
+  "model_path": "/workspace/jumproo/stock_prediction_v8/models/patchtst/best_model.pt",
+  "val_results": [
+    {
+      "threshold": 0.03,
+      "signals": 128130,
+      "precision": 0.05296183563568251,
+      "recall": 0.9465755335472172,
+      "avg_ret_sig": 0.03695182874798775
+    },
+    {
+      "threshold": 0.05,
+      "signals": 60460,
+      "precision": 0.07606682103870327,
+      "recall": 0.6415120658390292,
+      "avg_ret_sig": 0.0440421998500824
+    },
+    {
+      "threshold": 0.07,
+      "signals": 29209,
+      "precision": 0.09226608237187169,
+      "recall": 0.37592411772911144,
+      "avg_ret_sig": 0.048261649906635284
+    },
+    {
+      "threshold": 0.075,
+      "signals": 23610,
+      "precision": 0.09682337992376112,
+      "recall": 0.3188729250941554,
+      "avg_ret_sig": 0.04964042082428932
+    },
+    {
+      "threshold": 0.1,
+      "signals": 8468,
+      "precision": 0.11998110533774209,
+      "recall": 0.14172130004184685,
+      "avg_ret_sig": 0.0565670020878315
+    },
+    {
+      "threshold": 0.125,
+      "signals": 3360,
+      "precision": 0.14047619047619048,
+      "recall": 0.06583902915329892,
+      "avg_ret_sig": 0.06417146325111389
+    }
+  ],
+  "test_results": [
+    {
+      "threshold": 0.03,
+      "signals": 87678,
+      "precision": 0.08671502543397432,
+      "recall": 0.9408489048385101,
+      "avg_ret_sig": 0.049272648990154266
+    },
+    {
+      "threshold": 0.05,
+      "signals": 39910,
+      "precision": 0.1205712853921323,
+      "recall": 0.5954708575671328,
+      "avg_ret_sig": 0.059996455907821655
+    },
+    {
+      "threshold": 0.07,
+      "signals": 17442,
+      "precision": 0.14923747276688454,
+      "recall": 0.3221135998020047,
+      "avg_ret_sig": 0.06963346153497696
+    },
+    {
+      "threshold": 0.075,
+      "signals": 13726,
+      "precision": 0.15882267230074312,
+      "recall": 0.2697685929959163,
+      "avg_ret_sig": 0.07262386381626129
+    },
+    {
+      "threshold": 0.1,
+      "signals": 4083,
+      "precision": 0.216017634092579,
+      "recall": 0.10914490780843955,
+      "avg_ret_sig": 0.09103661775588989
+    },
+    {
+      "threshold": 0.125,
+      "signals": 1516,
+      "precision": 0.27308707124010556,
+      "recall": 0.05123128325702265,
+      "avg_ret_sig": 0.10998059809207916
+    }
+  ]
+}
